@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ exam.title }}</title>
+    <style>
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            padding: 50px; 
+            text-align: center; 
+            background-color: #f0f2f5;
+        }
+        .question-card, .intro-card {
+            background: white;
+            padding: 40px;
+            border-radius: 20px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            max-width: 700px;
+            margin: auto;
+            display: none; 
+        }
+        .question-card.active, .intro-card.active {
+            display: block; 
+        }
+        h2 { color: #2c3e50; font-size: 2.5em; margin-bottom: 20px; }
+        .status { 
+            font-size: 1.5em; color: #27ae60; margin-top: 20px; font-weight: bold; min-height: 40px;
+        }
+        .instructions { color: #7f8c8d; margin-top: 30px; font-size: 0.9em; }
+        audio { display: none; }
+    </style>
+</head>
+<body>
+
+    <h1 style="color: #333;">{{ exam.title }}</h1>
+
+    <div class="intro-card active" id="intro-card">
+        <h2>التعليمات</h2>
+        <p style="font-size: 1.5em; color: #555;">جاري قراءة التعليمات...</p>
+        <p>اضغط مسافة أو إنتر لتخطي التعليمات والبدء.</p>
+        {% if exam.audio_file %}
+            <audio id="intro-audio" src="{{ exam.audio_file.url }}"></audio>
+        {% endif %}
+    </div>
+
+    <form method="POST" enctype="multipart/form-data" id="examForm">
+        {% csrf_token %}
+        
+        {% for question in questions %}
+            <div class="question-card" id="q-card-{{ forloop.counter0 }}">
+                <h2>سؤال {{ forloop.counter }}:</h2>
+                <p style="font-size: 2em; color: #007bff;">{{ question.text }}</p>
+                
+                {% if question.audio_file %}
+                    <audio id="q-audio-{{ forloop.counter0 }}" src="{{ question.audio_file.url }}"></audio>
+                {% else %}
+                    <p style="color:red;">(لا يوجد ملف صوتي)</p>
+                {% endif %}
+
+                <div id="status-{{ forloop.counter0 }}" class="status"></div>
+                
+                <input type="file" name="audio_data" id="file-{{ forloop.counter0 }}" style="display: none;">
+                <input type="hidden" name="question_id" value="{{ question.id }}">
+            </div>
+        {% endfor %}
+
+        <button type="submit" id="submit-all" style="display: none;">ارسال</button>
+    </form>
+
+    <div class="instructions">
+        <p><strong>المسافة (1):</strong> تكرار السؤال | <strong>المسافة (2):</strong> تسجيل/إيقاف | <strong>Enter:</strong> حفظ والتالي</p>
+    </div>
+
+    <script>
+        const cards = document.querySelectorAll('.question-card');
+        const introCard = document.getElementById('intro-card');
+        const introAudio = document.getElementById('intro-audio');
+        
+        let currentIndex = 0;
+        let isRecording = false;
+        let mediaRecorder;
+        let audioChunks = [];
+        let lastSpacePressTime = 0;
+        let isExamStarted = false; // هل انتهت المقدمة وبدأنا؟
+
+        // --- 1. مرحلة المقدمة ---
+        window.onload = function() {
+            if (introAudio) {
+                introAudio.play().catch(e => console.log("انتظار تفاعل"));
+                // لما التعليمات تخلص، ادخل على السؤال الأول
+                introAudio.onended = startExam;
+            } else {
+                startExam();
+            }
+        };
+
+        function startExam() {
+            if (isExamStarted) return;
+            isExamStarted = true;
+            
+            // إخفاء المقدمة وإظهار أول سؤال
+            introCard.classList.remove('active');
+            if(introAudio) { introAudio.pause(); }
+            
+            if (cards.length > 0) {
+                showQuestion(0);
+            } else {
+                speakSimple("لا توجد أسئلة");
+            }
+        }
+
+        // --- 2. التحكم في الأسئلة ---
+        function showQuestion(index) {
+            stopAllAudio();
+            cards.forEach(c => c.classList.remove('active'));
+            cards[index].classList.add('active');
+            playQuestionAudio(index);
+        }
+
+        function playQuestionAudio(index) {
+            let audio = document.getElementById(`q-audio-${index}`);
+            if (audio) {
+                audio.currentTime = 0;
+                audio.play();
+            }
+        }
+
+        function stopAllAudio() {
+            document.querySelectorAll('audio').forEach(a => { a.pause(); a.currentTime = 0; });
+            window.speechSynthesis.cancel();
+        }
+
+        // --- 3. لوحة المفاتيح ---
+        document.addEventListener('keydown', function(event) {
+            
+            // لو لسه في المقدمة، أي زرار يدخله الامتحان
+            if (!isExamStarted && (event.code === 'Space' || event.code === 'Enter')) {
+                event.preventDefault();
+                startExam();
+                return;
+            }
+
+            // زر المسافة (Space)
+            if (event.code === 'Space') {
+                event.preventDefault();
+                let currentTime = new Date().getTime();
+                
+                if (currentTime - lastSpacePressTime < 300) {
+                    toggleRecording(); // ضغطتين: تسجيل
+                    lastSpacePressTime = 0;
+                } else {
+                    lastSpacePressTime = currentTime;
+                    setTimeout(() => {
+                        if (new Date().getTime() - lastSpacePressTime >= 300 && lastSpacePressTime !== 0) {
+                            if (!isRecording) {
+                                stopAllAudio();
+                                playQuestionAudio(currentIndex); // ضغطة: إعادة السؤال
+                            }
+                        }
+                    }, 350);
+                }
+            }
+
+            // زر الإنتر (Enter): حفظ وانتقال
+            if (event.code === 'Enter') {
+                event.preventDefault();
+                handleEnterKey();
+            }
+
+            // الأسهم (اختياري لو حب يرجع يراجع)
+            if (event.code === 'ArrowRight') { // السابق
+                if (currentIndex > 0) {
+                    stopRecordingIfActive();
+                    currentIndex--;
+                    showQuestion(currentIndex);
+                }
+            }
+        });
+
+        // --- 4. منطق زر الإنتر (الجوهر) ---
+        function handleEnterKey() {
+            // 1. لو بيسجل، وقف التسجيل واحفظه
+            if (isRecording) {
+                toggleRecording(); // دي هتوقف وتحفظ الملف
+                // ندي مهلة صغيرة عشان الحفظ يتم قبل النقل
+                setTimeout(nextQuestionOrSubmit, 500);
+            } else {
+                // لو مش بيسجل، انقل علطول
+                nextQuestionOrSubmit();
+            }
+        }
+
+        function nextQuestionOrSubmit() {
+            // هل فيه إجابة مسجلة؟ (اختياري: ممكن تنبهه لو مفيش ملف)
+            let fileInput = document.getElementById(`file-${currentIndex}`);
+            
+            if (currentIndex < cards.length - 1) {
+                // الانتقال للسؤال التالي
+                speakSimple("تم الحفظ، التالي");
+                currentIndex++;
+                setTimeout(() => showQuestion(currentIndex), 1000);
+            } else {
+                // إنهاء الاختبار
+                stopAllAudio();
+                speakSimple("تم حفظ الاختبار بالكامل، جاري الإرسال");
+                setTimeout(() => {
+                    document.getElementById('submit-all').click();
+                }, 2000);
+            }
+        }
+
+        // --- 5. التسجيل ---
+        async function toggleRecording() {
+            if (!isRecording) {
+                // بدء التسجيل
+                stopAllAudio();
+                try {
+                    let stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    mediaRecorder = new MediaRecorder(stream);
+                    audioChunks = [];
+                    mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+                    
+                    mediaRecorder.onstop = () => {
+                        // هنا بيتم "استبدال" الملف القديم بالجديد (Overwrite)
+                        let audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                        let file = new File([audioBlob], `ans_${currentIndex}.wav`, { type: "audio/wav" });
+                        let container = new DataTransfer();
+                        container.items.add(file);
+                        document.getElementById(`file-${currentIndex}`).files = container.files;
+                    };
+
+                    mediaRecorder.start();
+                    isRecording = true;
+                    document.getElementById(`status-${currentIndex}`).innerText = "🔴 جاري التسجيل...";
+                    speakSimple("ابدأ"); 
+                } catch(e) { speakSimple("المايكروفون غير متاح"); }
+            } else {
+                // إيقاف التسجيل
+                if (mediaRecorder) {
+                    mediaRecorder.stop();
+                    isRecording = false;
+                    document.getElementById(`status-${currentIndex}`).innerText = "✅ تم حفظ التسجيل (مؤقتاً)";
+                    speakSimple("تم");
+                }
+            }
+        }
+
+        function stopRecordingIfActive() {
+            if (isRecording && mediaRecorder) {
+                mediaRecorder.stop();
+                isRecording = false;
+            }
+        }
+
+        function speakSimple(msg) {
+            window.speechSynthesis.cancel();
+            let u = new SpeechSynthesisUtterance(msg);
+            u.lang = 'ar-SA';
+            u.rate = 1.2;
+            window.speechSynthesis.speak(u);
+        }
+    </script>
+</body>
+</html>
