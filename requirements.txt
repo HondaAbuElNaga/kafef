@@ -21,3 +21,10 @@ typing_extensions==4.15.0
 tzdata==2025.3
 urllib3==2.6.3
 yarl==1.22.0
+django-storages
+boto3
+psycopg2-binary
+dj-database-url
+whitenoise
+gunicorn
+fastapi

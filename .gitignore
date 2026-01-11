@@ -1,0 +1,12 @@
+# .gitignore
+*.pyc
+__pycache__/
+db.sqlite3
+.DS_Store
+.env
+venv/
+.idea/
+.vscode/
+
+# Media files (We use S3 for these, don't commit them)
+testapp/media/

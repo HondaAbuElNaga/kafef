@@ -1,0 +1,11 @@
+# .dockerignore
+testapp/media/
+testapp/db.sqlite3
+testapp/__pycache__/
+testapp/testapp/__pycache__/
+testapp/exams/__pycache__/
+venv/
+.git/
+.gitignore
+.dockerignore
+README.md
