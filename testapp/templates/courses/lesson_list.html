@@ -1,0 +1,141 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>دروس: {{ course.title }}</title>
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        /* نفس التنسيق لضمان التوحيد */
+        body { 
+            font-family: 'Cairo', sans-serif; 
+            padding: 20px; text-align: center;
+            background-color: #f4f7f6; overflow-x: hidden;
+        }
+        body::before {
+            content: ""; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background-image: url('{% static "bg.jpg" %}'); 
+            background-size: cover; background-position: 80% center; opacity: 0.10; z-index: -1;
+        }
+        
+        .header-area { margin-bottom: 40px; }
+        h1 { color: #006c35; font-size: 2em; margin: 0; }
+        .sub-text { color: #555; }
+
+        .lesson-item {
+            background: white; padding: 25px; margin-bottom: 15px; border-radius: 10px;
+            border-left: 5px solid #ccc; text-align: right; /* محاذاة لليمين كقائمة */
+            max-width: 700px; margin-left: auto; margin-right: auto;
+            transition: 0.3s; cursor: pointer; display: flex; align-items: center; justify-content: space-between;
+        }
+
+        .highlight {
+            border-left: 5px solid #006c35; background-color: #e8f5e9;
+            transform: translateX(-10px); /* حركة بسيطة لليمين عند التحديد */
+        }
+
+        .lesson-number {
+            background: #006c35; color: white; width: 30px; height: 30px; 
+            border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-left: 15px;
+        }
+
+        audio { display: none; }
+    </style>
+</head>
+<body>
+
+    <div class="header-area">
+        <h1>{{ course.title }}</h1>
+        <p class="sub-text">عدد الدروس: {{ lessons.count }}</p>
+        <p style="background:#333; color:#fff; display:inline-block; padding:5px 15px; border-radius:20px; font-size:0.9em;">
+            اضغط مسافة للتنقل، وإنتر لبدء الدرس
+        </p>
+    </div>
+
+    <div id="lessons-container">
+        {% for lesson in lessons %}
+            <div class="lesson-item" id="lesson-{{ forloop.counter0 }}" data-url="{% url 'lesson_player' lesson.id %}">
+                <div style="display:flex; align-items:center;">
+                    <div class="lesson-number">{{ lesson.order }}</div>
+                    <h3>{{ lesson.title }}</h3>
+                </div>
+                <span style="color:#999;"><i class="fas fa-play-circle"></i></span>
+
+                {% if lesson.audio_file %}
+                    <audio id="audio-{{ forloop.counter0 }}" src="{{ lesson.audio_file.url }}"></audio>
+                {% endif %}
+            </div>
+        {% empty %}
+            <p>لم يتم إضافة دروس بعد لهذه الدورة.</p>
+        {% endfor %}
+    </div>
+
+    <script>
+        const items = document.querySelectorAll('.lesson-item');
+        let currentIndex = -1;
+
+        // عند التحميل
+        window.onload = function() {
+            setTimeout(() => {
+                speakSimple("أنت الآن داخل دورة {{ course.title }}. اختر الدرس.");
+            }, 800);
+        };
+
+        function speakSimple(text) {
+            window.speechSynthesis.cancel();
+            window.utterance = new SpeechSynthesisUtterance(text);
+            window.utterance.lang = 'ar-SA';
+            window.speechSynthesis.speak(window.utterance);
+        }
+
+        function stopAllAudio() {
+            document.querySelectorAll('audio').forEach(a => { a.pause(); a.currentTime = 0; });
+            window.speechSynthesis.cancel();
+        }
+
+        document.addEventListener('keydown', function(event) {
+            // المسافة للتنقل
+            if (event.code === 'Space') {
+                event.preventDefault();
+                stopAllAudio();
+                
+                if (currentIndex >= 0 && currentIndex < items.length) items[currentIndex].classList.remove('highlight');
+                
+                currentIndex++;
+                if (currentIndex >= items.length) {
+                    currentIndex = 0;
+                    speakSimple("الدرس الأول");
+                    setTimeout(() => activateItem(currentIndex), 1000);
+                } else {
+                    activateItem(currentIndex);
+                }
+            }
+
+            // الإنتر للتشغيل
+            if (event.code === 'Enter') {
+                if (currentIndex >= 0) {
+                    stopAllAudio();
+                    speakSimple("جاري تحميل الدرس...");
+                    let url = items[currentIndex].getAttribute('data-url');
+                    setTimeout(() => { window.location.href = url; }, 1000);
+                }
+            }
+        });
+
+        function activateItem(index) {
+            let item = items[index];
+            item.classList.add('highlight');
+            item.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            
+            let audio = document.getElementById(`audio-${index}`);
+            if (audio) {
+                audio.currentTime = 0;
+                audio.play();
+            } else {
+                // لو مفيش ملف صوتي، ينطق اسم الدرس آلياً
+                speakSimple(item.querySelector('h3').innerText);
+            }
+        }
+    </script>
+</body>
+</html>

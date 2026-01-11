@@ -1,0 +1,257 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>مشغل الدرس: {{ lesson.title }}</title>
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Cairo', sans-serif;
+            background-color: #f0f2f5;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            height: 100vh; margin: 0; overflow: hidden; /* منع السكرول أثناء الدرس */
+            text-align: center;
+        }
+
+        /* الخلفية المائية */
+        body::before {
+            content: ""; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background-image: url('{% static "bg.jpg" %}');
+            background-size: cover; background-position: 80% center; opacity: 0.10; z-index: -1;
+        }
+
+        .player-container {
+            background: white; padding: 40px; border-radius: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1); max-width: 800px; width: 90%;
+            border: 2px solid #e0e0e0; transition: 0.3s;
+        }
+
+        /* حالة الانتظار (Simulator Mode) */
+        .waiting-input {
+            border-color: #006c35; box-shadow: 0 0 20px rgba(0, 108, 53, 0.3);
+            animation: pulse 2s infinite;
+        }
+
+        /* حالة الخطأ */
+        .error-mode {
+            border-color: #dc3545; box-shadow: 0 0 20px rgba(220, 53, 69, 0.3);
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.02); }
+            100% { transform: scale(1); }
+        }
+
+        h1 { color: #006c35; margin-bottom: 20px; }
+        .current-text { font-size: 1.5em; color: #333; min-height: 80px; }
+        .status-badge {
+            display: inline-block; padding: 5px 15px; border-radius: 20px;
+            background: #eee; color: #777; font-size: 0.9em; margin-bottom: 20px;
+        }
+
+        /* إخفاء مشغل الصوت لأنه يعمل برمجياً */
+        audio { display: none; }
+    </style>
+</head>
+<body>
+
+    <div class="player-container" id="player-box">
+        <div class="status-badge" id="step-counter">جاري التحميل...</div>
+        <h1 id="lesson-title">{{ lesson.title }}</h1>
+        <div class="current-text" id="display-text">
+            جاري تهيئة الدرس... يرجى الانتظار.
+        </div>
+    </div>
+
+    <audio id="main-audio"></audio>
+    <audio id="sfx-audio"></audio>
+
+    <script>
+        // ==========================================
+        // 1. استقبال البيانات (The Blueprint)
+        // ==========================================
+        // هنا نستلم السيناريو القادم من Django ونحوله لكائن جافاسكريبت
+        const lessonScenario = {{ lesson_data_json|safe }};
+        const lessonTitle = "{{ lesson.title }}";
+        const redirectUrl = "{% url 'course_detail' lesson.course.id %}"; // العودة عند الانتهاء
+
+        // متغيرات الحالة (State Variables)
+        let currentStepIndex = 0;
+        let isWaitingForInput = false; // هل نحن في وضع المحاكاة؟
+        let currentExpectedKey = null; // ما هو الزر المطلوب الآن؟
+
+        const audioPlayer = document.getElementById('main-audio');
+        const sfxPlayer = document.getElementById('sfx-audio');
+        const displayBox = document.getElementById('display-text');
+        const playerBox = document.getElementById('player-box');
+        const counterBox = document.getElementById('step-counter');
+
+        // ==========================================
+        // 2. محرك التشغيل (The Engine)
+        // ==========================================
+
+        window.onload = function() {
+            // تشغيل ترحيب بسيط ثم البدء
+            setTimeout(() => {
+                startLesson();
+            }, 1000);
+        };
+
+        function startLesson() {
+            if (lessonScenario.length === 0) {
+                displayBox.innerText = "هذا الدرس فارغ.";
+                speak("عذراً، لا يوجد محتوى في هذا الدرس.");
+                return;
+            }
+            playStep(0);
+        }
+
+        function playStep(index) {
+            // التحقق من نهاية الدرس
+            if (index >= lessonScenario.length) {
+                finishLesson();
+                return;
+            }
+
+            currentStepIndex = index;
+            const step = lessonScenario[index];
+            
+            // تحديث الواجهة
+            counterBox.innerText = `خطوة ${index + 1} من ${lessonScenario.length}`;
+            displayBox.innerText = step.text;
+            
+            // إعادة تعيين الحالة
+            isWaitingForInput = false;
+            playerBox.className = 'player-container'; // إزالة تأثيرات الألوان
+
+            // منطق التشغيل حسب النوع
+            if (step.type === 'LECTURE') {
+                // وضع الشرح: شغل الصوت، ولما يخلص انقل للي بعده
+                playAudio(step.audio_url, () => {
+                    // بعد انتهاء الشرح، ننتقل تلقائياً (أو ممكن نطلب ضغط مسافة لو حبيت)
+                    nextStep(); 
+                });
+
+            } else if (step.type === 'SIMULATOR') {
+                // وضع المحاكاة: شغل الصوت، ثم انتظر الزر
+                playAudio(step.audio_url, () => {
+                    // الصوت خلص، الآن ننتظر الطالب
+                    isWaitingForInput = true;
+                    currentExpectedKey = step.expected_key; // مثلاً "Space" أو "ControlLeft"
+                    playerBox.classList.add('waiting-input'); // تأثير بصري (نبض أخضر)
+                    // يمكن تشغيل صوت خفيف "تنبيه" لبدء الانتظار
+                });
+            } 
+            // يمكن إضافة VOICE_Q هنا لاحقاً
+        }
+
+        function nextStep() {
+            // تأخير بسيط جداً للفصل بين الخطوات
+            setTimeout(() => {
+                playStep(currentStepIndex + 1);
+            }, 500);
+        }
+
+        function finishLesson() {
+            displayBox.innerText = "تم الانتهاء من الدرس بنجاح!";
+            speak("أحسنت! لقد أتممت الدرس بنجاح. سنعود للقائمة الآن.");
+            setTimeout(() => {
+                window.location.href = redirectUrl;
+            }, 4000);
+        }
+
+        // ==========================================
+        // 3. معالج الإدخال (Input Handler) - أهم جزء
+        // ==========================================
+
+        document.addEventListener('keydown', function(event) {
+            // لو مش مستنيين زر، تجاهل (إلا لو عايزين زرار لإيقاف الدرس مثلاً)
+            if (!isWaitingForInput) return;
+
+            // منع سلوك المتصفح الافتراضي للأزرار المهمة (عشان مايفتحش قوائم المتصفح)
+            if(['Space', 'Enter', 'ArrowUp', 'ArrowDown', 'Tab'].includes(event.code) || event.ctrlKey) {
+                event.preventDefault(); 
+            }
+
+            const step = lessonScenario[currentStepIndex];
+            
+            // طباعة الزر في الكونسول عشان (أنت) تعرف الكود الصح وتكتبه في الداتا بيز
+            console.log("Pressed Key:", event.code); 
+
+            // التحقق من الإجابة (مقارنة الكود المضغوط بالكود المتوقع)
+            // نستخدم toLowerCase لتجنب مشاكل الحروف الكبيرة والصغيرة
+            let pressed = event.code.toLowerCase();
+            let expected = currentExpectedKey ? currentExpectedKey.toLowerCase() : "";
+
+            // دعم الأزرار المتعددة (مثلاً لو كاتبين ControlLeft أو ControlRight)
+            if (pressed === expected || (expected === 'control' && pressed.includes('control'))) {
+                // ✅ إجابة صحيحة
+                handleCorrectAnswer();
+            } else {
+                // ❌ إجابة خاطئة
+                handleWrongAnswer(step);
+            }
+        });
+
+        function handleCorrectAnswer() {
+            isWaitingForInput = false;
+            playerBox.classList.remove('waiting-input');
+            playerBox.classList.remove('error-mode');
+            
+            // تشغيل صوت نجاح (Ding)
+            // (يمكنك إضافة ملف mp3 هنا لاحقاً، حالياً سنستخدم الـ TTS للتشجيع)
+            speak("ممتاز!", () => {
+                nextStep();
+            });
+        }
+
+        function handleWrongAnswer(step) {
+            playerBox.classList.add('error-mode'); // تأثير أحمر
+            
+            // هل يوجد ملف صوتي للخطأ؟
+            if (step.error_audio_url) {
+                playAudio(step.error_audio_url, () => {
+                    // بعد ما شرح له غلطه، نرجع ننتظر الزر تاني
+                    playerBox.classList.remove('error-mode');
+                });
+            } else {
+                // لو مفيش صوت مخصص، نقول جملة عامة
+                speak("حاول مرة أخرى.", () => {
+                    playerBox.classList.remove('error-mode');
+                });
+            }
+        }
+
+        // ==========================================
+        // 4. أدوات الصوت (Audio Utils)
+        // ==========================================
+
+        function playAudio(url, onEndCallback) {
+            if (!url) {
+                if (onEndCallback) onEndCallback();
+                return;
+            }
+            audioPlayer.src = url;
+            audioPlayer.onended = onEndCallback;
+            audioPlayer.onerror = () => {
+                console.log("Audio Error, skipping...");
+                if (onEndCallback) onEndCallback();
+            };
+            audioPlayer.play().catch(e => console.log("Auto-play blocked"));
+        }
+
+        // دالة نطق احتياطية (TTS) للحالات الطارئة أو التشجيع
+        function speak(text, onEndCallback) {
+            window.speechSynthesis.cancel();
+            let u = new SpeechSynthesisUtterance(text);
+            u.lang = 'ar-SA';
+            u.onend = onEndCallback;
+            window.speechSynthesis.speak(u);
+        }
+
+    </script>
+</body>
+</html>
